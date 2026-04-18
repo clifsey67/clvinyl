@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Vinyl ID">
+    <title>Vinyl ID</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #121212;
+            color: white;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            text-align: center;
+        }
+        #album-art {
+            width: 250px;
+            height: 250px;
+            background-color: #2a2a2a;
+            border-radius: 12px;
+            object-fit: cover;
+            margin-bottom: 20px;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #listen-btn {
+            background-color: #1DB954;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            padding: 16px 32px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.2s;
+            margin-bottom: 20px;
+        }
+        #listen-btn:active {
+            transform: scale(0.95);
+        }
+        #listen-btn.recording {
+            background-color: #E22134;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        #status {
+            font-size: 16px;
+            color: #b3b3b3;
+            margin-bottom: 8px;
+            min-height: 20px;
+        }
+        #track-title {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 0 0 8px 0;
+        }
+        #track-artist {
+            font-size: 18px;
+            color: #b3b3b3;
+            margin: 0 0 4px 0;
+        }
+        #track-album {
+            font-size: 14px;
+            color: #888;
+            margin: 0;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+
+    <img id="album-art" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='250' height='250'><rect width='250' height='250' fill='%232a2a2a'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' fill='%23666' font-size='24' font-family='sans-serif'>No Artwork</text></svg>" alt="Album Art">
+    
+    <h1 id="track-title">Ready to Listen</h1>
+    <h2 id="track-artist">-</h2>
+    <p id="track-album"></p>
+    
+    <p id="status">Tap the button to identify music</p>
+    <button id="listen-btn">Listen</button>
+
+    <script>
+        // --- CONFIGURATION ---
+        const AUDD_API_TOKEN = '96f5b8d295bad655a3cfd2e7b5568705'; 
+        const RECORD_DURATION_MS = 6000; // Listen for 6 seconds
+        // ---------------------
+
+        const btn = document.getElementById('listen-btn');
+        const statusText = document.getElementById('status');
+        const albumArt = document.getElementById('album-art');
+        const trackTitle = document.getElementById('track-title');
+        const trackArtist = document.getElementById('track-artist');
+        const trackAlbum = document.getElementById('track-album');
+
+        let mediaRecorder;
+        let audioChunks = [];
+
+        btn.addEventListener('click', async () => {
+            if (mediaRecorder && mediaRecorder.state === 'recording') return;
+
+            try {
+                // Request microphone access
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = event => {
+                    if (event.data.size > 0) audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    // Stop all mic tracks to turn off the red recording light on iPad
+                    stream.getTracks().forEach(track => track.stop());
+                    
+                    btn.classList.remove('recording');
+                    btn.innerText = 'Listen';
+                    statusText.innerText = 'Analyzing audio...';
+
+                    const audioBlob = new Blob(audioChunks);
+                    await identifyAudio(audioBlob);
+                };
+
+                // Start recording
+                mediaRecorder.start();
+                btn.classList.add('recording');
+                btn.innerText = 'Listening...';
+                statusText.innerText = 'Capturing audio from the room...';
+
+                // Stop recording automatically after RECORD_DURATION_MS
+                setTimeout(() => {
+                    if (mediaRecorder.state === 'recording') {
+                        mediaRecorder.stop();
+                    }
+                }, RECORD_DURATION_MS);
+
+            } catch (err) {
+                statusText.innerText = 'Error: Could not access microphone.';
+                console.error('Mic Error:', err);
+            }
+        });
+
+        async function identifyAudio(blob) {
+            const formData = new FormData();
+            formData.append('api_token', AUDD_API_TOKEN);
+            formData.append('file', blob);
+            // Request Apple Music and Spotify data to ensure we get high-res album art
+            formData.append('return', 'apple_music,spotify');
+
+            try {
+                const response = await fetch('https://api.audd.io/', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (data.status === "success" && data.result) {
+                    const result = data.result;
+                    
+                    trackTitle.innerText = result.title;
+                    trackArtist.innerText = result.artist;
+                    trackAlbum.innerText = result.album;
+
+                    // Extract Album Art (Prefer Apple Music, fallback to Spotify)
+                    let artworkUrl = null;
+                    if (result.apple_music && result.apple_music.artwork && result.apple_music.artwork.url) {
+                        // Apple Music returns a template URL, we must replace {w} and {h}
+                        artworkUrl = result.apple_music.artwork.url.replace('{w}', '500').replace('{h}', '500');
+                    } else if (result.spotify && result.spotify.album && result.spotify.album.images.length > 0) {
+                        artworkUrl = result.spotify.album.images[0].url;
+                    }
+
+                    if (artworkUrl) {
+                        albumArt.src = artworkUrl;
+                    }
+
+                    statusText.innerText = 'Found it!';
+                } else {
+                    trackTitle.innerText = 'Not Found';
+                    trackArtist.innerText = 'Could not identify the track.';
+                    trackAlbum.innerText = '';
+                    statusText.innerText = 'Try getting closer to the speakers.';
+                }
+            } catch (err) {
+                statusText.innerText = 'Network error while analyzing.';
+                console.error('API Error:', err);
+            }
+        }
+    </script>
+</body>
+</html>
